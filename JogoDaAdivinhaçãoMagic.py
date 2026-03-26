@@ -120,6 +120,73 @@ class ScryfallAPI:
         return []
 
     @staticmethod
+    def listar_colecoes() -> list[dict]:
+        dados = ScryfallAPI.__requisitar(f"{ScryfallAPI.BASE_URL}/sets")
+        if dados and "data" in dados:
+            return [{"codigo": s["code"], "nome": s["name"]} for s in dados["data"]]
+        return []
+
+    @staticmethod
+    def carta_aleatoria_de_colecao(codigo_set: str) -> dict | None:
+        dados = ScryfallAPI.__requisitar(
+            f"{ScryfallAPI.BASE_URL}/cards/random",
+            params={"q": f"e:{codigo_set} (lang:pt OR lang:en) -layout:transform -layout:modal_dfc -layout:meld"}
+        )
+        if not dados:
+            return None
+        return {
+            "nome":        dados.get("name", "Desconhecida"),
+            "custo":       dados.get("mana_cost", "N/A"),
+            "cmc":         int(dados.get("cmc", 0)),
+            "tipo":        dados.get("type_line", "N/A"),
+            "cor":         ScryfallAPI.__traduzir_cores(dados.get("colors", [])),
+            "raridade":    ScryfallAPI.__traduzir_raridade(dados.get("rarity", "N/A")),
+            "conjunto":    dados.get("set_name", "N/A"),
+            "texto":       dados.get("oracle_text", ""),
+            "poder":       dados.get("power", None),
+            "resistencia": dados.get("toughness", None),
+            "imagem":      dados.get("image_uris", {}).get("normal", None),
+        }
+
+    @staticmethod
+    def buscar_data_set(codigo_set: str) -> str | None:
+        # Busca a data de lançamento de um set pelo código
+        dados = ScryfallAPI.__requisitar(f"{ScryfallAPI.BASE_URL}/sets/{codigo_set}")
+        if dados and "released_at" in dados:
+            return dados["released_at"]  # formato: "2021-07-09"
+        return None
+
+    @staticmethod
+    def carta_aleatoria_entre_colecoes(set_inicio: str, set_fim: str) -> dict | None:
+        # Busca as datas dos dois sets e filtra as cartas pelo período
+        data_inicio = ScryfallAPI.buscar_data_set(set_inicio)
+        data_fim = ScryfallAPI.buscar_data_set(set_fim)
+
+        if not data_inicio or not data_fim:
+            print("Nao foi possivel encontrar um ou ambos os sets informados.")
+            return None
+
+        dados = ScryfallAPI.__requisitar(
+            f"{ScryfallAPI.BASE_URL}/cards/random",
+            params={"q": f"date>={data_inicio} date<={data_fim} (lang:pt OR lang:en) -layout:transform -layout:modal_dfc -layout:meld"}
+        )
+        if not dados:
+            return None
+        return {
+            "nome":        dados.get("name", "Desconhecida"),
+            "custo":       dados.get("mana_cost", "N/A"),
+            "cmc":         int(dados.get("cmc", 0)),
+            "tipo":        dados.get("type_line", "N/A"),
+            "cor":         ScryfallAPI.__traduzir_cores(dados.get("colors", [])),
+            "raridade":    ScryfallAPI.__traduzir_raridade(dados.get("rarity", "N/A")),
+            "conjunto":    dados.get("set_name", "N/A"),
+            "texto":       dados.get("oracle_text", ""),
+            "poder":       dados.get("power", None),
+            "resistencia": dados.get("toughness", None),
+            "imagem":      dados.get("image_uris", {}).get("normal", None),
+        }
+
+    @staticmethod
     def __traduzir_cores(cores: list) -> str:
         mapa = {"W": "Branco", "U": "Azul", "B": "Preto", "R": "Vermelho", "G": "Verde"}
         if not cores:
@@ -153,7 +220,7 @@ class JogoMagic(Jogo):
         "imagem",
     ]
 
-    def __init__(self, nome_jogador: str, ranking: Ranking):
+    def __init__(self, nome_jogador: str, ranking: Ranking, modo_set: dict = None):
         self.__nome_jogador = nome_jogador
         self.__ranking = ranking
         self.__carta = None
@@ -161,12 +228,24 @@ class JogoMagic(Jogo):
         self.__limite = self.LIMITE_TENTATIVAS
         self.__acertou = False
         self.__dicas_dadas = []
+        self.__modo_set = modo_set
 
     def __carregar_carta(self) -> bool:
         print("\nBuscando uma carta no Scryfall...")
-        carta = ScryfallAPI.carta_aleatoria()
+
+        if self.__modo_set is None:
+            carta = ScryfallAPI.carta_aleatoria()
+        elif self.__modo_set["tipo"] == "especifica":
+            carta = ScryfallAPI.carta_aleatoria_de_colecao(self.__modo_set["set"])
+        elif self.__modo_set["tipo"] == "intervalo":
+            carta = ScryfallAPI.carta_aleatoria_entre_colecoes(
+                self.__modo_set["inicio"], self.__modo_set["fim"]
+            )
+        else:
+            carta = ScryfallAPI.carta_aleatoria()
+
         if not carta:
-            print("Nao foi possivel conectar ao Scryfall. Verifique sua conexao.")
+            print("Nao foi possivel buscar uma carta. Verifique o codigo do set ou sua conexao.")
             return False
         self.__carta = carta
         return True
@@ -296,6 +375,27 @@ def executar_jogo(jogo: Jogo):
     jogo.jogar()
 
 
+def selecionar_modo_set() -> dict | None:
+    print("\nModo de colecao:")
+    print("  1 - Qualquer carta (padrao)")
+    print("  2 - Colecao especifica")
+    print("  3 - Intervalo entre colecoes")
+
+    opcao = input("Escolha: ").strip()
+
+    if opcao == "2":
+        codigo = input("Codigo da colecao (ex: dsk, mkm, ltr): ").strip().lower()
+        return {"tipo": "especifica", "set": codigo}
+
+    elif opcao == "3":
+        print("Use os codigos de set do Scryfall (ex: m21, znr, mid)")
+        inicio = input("Set inicial: ").strip().lower()
+        fim    = input("Set final:   ").strip().lower()
+        return {"tipo": "intervalo", "inicio": inicio, "fim": fim}
+
+    return None
+
+
 def main():
     ranking = Ranking()
 
@@ -314,7 +414,63 @@ def main():
             nome = input("\nDigite seu nome: ").strip()
             if not nome:
                 nome = "Anonimo"
-            jogo = JogoMagic(nome, ranking)
+            modo = selecionar_modo_set()
+            jogo = JogoMagic(nome, ranking, modo_set=modo)
+            executar_jogo(jogo)
+
+        elif opcao == "2":
+            ranking.exibir()
+
+        elif opcao == "3":
+            print("\nAte a proxima, Planeswalker!\n")
+            break
+
+
+if __name__ == "__main__":
+    main()
+
+
+def selecionar_modo_set() -> dict | None:
+    print("\nModo de colecao:")
+    print("  1 - Qualquer carta (padrao)")
+    print("  2 - Colecao especifica")
+    print("  3 - Intervalo entre colecoes")
+
+    opcao = input("Escolha: ").strip()
+
+    if opcao == "2":
+        codigo = input("Codigo da colecao (ex: dsk, mkm, ltr): ").strip().lower()
+        return {"tipo": "especifica", "set": codigo}
+
+    elif opcao == "3":
+        print("Use os codigos de set do Scryfall (ex: m21, znr, mid)")
+        inicio = input("Set inicial: ").strip().lower()
+        fim    = input("Set final:   ").strip().lower()
+        return {"tipo": "intervalo", "inicio": inicio, "fim": fim}
+
+    return None
+
+
+def main():
+    ranking = Ranking()
+
+    while True:
+        print("\n" + "=" * 55)
+        print("MENU PRINCIPAL - " + TITULO)
+        print("=" * 55)
+        print("1 - Jogar")
+        print("2 - Ver Ranking")
+        print("3 - Sair")
+        print("-" * 55)
+
+        opcao = input("Escolha uma opcao: ").strip()
+
+        if opcao == "1":
+            nome = input("\nDigite seu nome: ").strip()
+            if not nome:
+                nome = "Anonimo"
+            modo = selecionar_modo_set()
+            jogo = JogoMagic(nome, ranking, modo_set=modo)
             executar_jogo(jogo)
 
         elif opcao == "2":
@@ -326,5 +482,4 @@ def main():
 
         else:
             print("Opcao invalida. Tente novamente.")
-main()
-# Eu criei esse jogo a parte, porque eu gostei da proposta, usei IA porque eu nunca importei uma API para um código antes, fiz mais por hobby essa parte do jogo da adivinhação
+    main()
